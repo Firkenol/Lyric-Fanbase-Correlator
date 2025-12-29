@@ -205,3 +205,26 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# ==============================================================================
+# AP Research Project Specifics (Data & Windows)
+# ==============================================================================
+
+# Ignore the raw Reddit archive files (even without extensions)
+*_submissions
+*_comments
+
+# Ignore any common data formats you might create
+*.zst
+*.json
+*.csv
+*.ndjson
+
+# Windows system files
+desktop.ini
+Thumbs.db
+$RECYCLE.BIN/
+
+# Your local data folders (if you made them)
+/raw/
+/processed/
+/outputs/
