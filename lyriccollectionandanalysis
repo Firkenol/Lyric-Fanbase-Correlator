@@ -1,0 +1,202 @@
+import os
+import csv
+import sys
+import lyricsgenius
+import statistics
+import time
+from dotenv import load_dotenv
+from transformers import pipeline
+
+# Load my environment variables
+load_dotenv()
+token = os.getenv("GENIUS_ACCESS_TOKEN")
+
+if not token:
+    print("Error: GENIUS_ACCESS_TOKEN not found in .env file.")
+    sys.exit()
+
+print("Token loaded successfully.")
+
+# Initialize the API with higher timeouts to prevent hanging on large requests
+genius = lyricsgenius.Genius(token, timeout=20, retries=3)
+genius.verbose = False 
+genius.remove_section_headers = True
+genius.skip_non_songs = True
+
+# Define my output file paths
+SONG_FILE = "song_level_vad.csv"
+ALBUM_FILE = "album_level_summary.csv"
+
+# Load the Hugging Face model
+print("Loading Hugging Face DistilBERT model...")
+# I am using this model to get emotion probabilities which I will map to VAD values
+classifier = pipeline("text-classification", model="bhadresh-savani/distilbert-base-uncased-emotion", return_all_scores=True)
+
+# Define the mapping from categorical emotions to Valence, Arousal, Dominance
+# Values are based on the NRC-VAD lexicon standards (0.0 to 1.0)
+vad_map = {
+    'joy':      [0.95, 0.70, 0.80],
+    'love':     [0.90, 0.60, 0.70],
+    'surprise': [0.80, 0.90, 0.50],
+    'sadness':  [0.20, 0.30, 0.20],
+    'fear':     [0.20, 0.80, 0.10],
+    'anger':    [0.25, 0.90, 0.80]
+}
+
+def analyze_lyrics(text):
+    # I need to chunk the text because the model has a 512 token limit
+    chunk_size = 512
+    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+    
+    total_v, total_a, total_d = 0, 0, 0
+    emotion_counts = {} 
+    valid_chunks = 0
+    
+    for chunk in chunks:
+        if len(chunk.strip()) < 10: continue
+        
+        try:
+            results = classifier(chunk)[0]
+            
+            # Identify the dominant emotion in this chunk for the frequency count
+            top_emotion = max(results, key=lambda x: x['score'])
+            label = top_emotion['label']
+            emotion_counts[label] = emotion_counts.get(label, 0) + 1
+            
+            # Calculate the weighted VAD average for this chunk
+            chunk_v, chunk_a, chunk_d = 0, 0, 0
+            for res in results:
+                lbl = res['label']
+                scr = res['score']
+                if lbl in vad_map:
+                    v, a, d = vad_map[lbl]
+                    chunk_v += v * scr
+                    chunk_a += a * scr
+                    chunk_d += d * scr
+            
+            total_v += chunk_v
+            total_a += chunk_a
+            total_d += chunk_d
+            valid_chunks += 1
+            
+        except Exception:
+            continue
+            
+    # Default to neutral if something goes wrong
+    if valid_chunks == 0:
+        return 0.5, 0.5, 0.5, "neutral"
+        
+    avg_v = total_v / valid_chunks
+    avg_a = total_a / valid_chunks
+    avg_d = total_d / valid_chunks
+    
+    # Determine the primary emotion across all chunks
+    dominant_emotion = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "neutral"
+    
+    return avg_v, avg_a, avg_d, dominant_emotion
+
+# My dataset
+artists_data = {
+    "Eminem": ["Recovery", "Music to be Murdered By", "The Death of Slim Shady"],
+    "Taylor Swift": ["Speak Now", "The Tortured Poets Department", "The Life of a Showgirl"],
+    "Sabrina Carpenter": ["Eyes Wide Open", "Short n' Sweet", "Man's Best Friend"],
+    "Kanye West": ["My Beautiful Dark Twisted Fantasy", "Vultures 1", "Vultures 2"],
+    "Drake": ["Views", "For All The Dogs", "Some Sexy Songs 4 U"],
+    "Kendrick Lamar": ["good kid, m.A.A.d city", "Mr. Morale & the Big Steppers", "GNX"],
+    "Juice WRLD": ["Goodbye & Good Riddance", "Fighting Demons", "The Party Never Ends"],
+    "Billie Eilish": ["WHEN WE ALL FALL ASLEEP, WHERE DO WE GO?", "Happier Than Ever", "HIT ME HARD AND SOFT"],
+    "The Weeknd": ["Kiss Land", "Dawn FM", "Hurry Up Tomorrow"],
+    # I am using the explicit title to ensure Genius finds the studio album, not a compilation
+    "Green Day": ["¡Uno!", "Father of All Motherfuckers", "Saviors"],
+    "J. Cole": ["Born Sinner", "The Off-Season", "Might Delete Later"],
+    "Mac Miller": ["Blue Slide Park", "Circles", "Balloonerism"],
+    "Playboi Carti": ["Die Lit", "Whole Lotta Red", "MUSIC"],
+    "Tame Impala": ["Lonerism", "The Slow Rush", "Deadbeat"]
+}
+
+def main():
+    # Setup the song-level CSV
+    if not os.path.exists(SONG_FILE):
+        with open(SONG_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Artist', 'Album', 'Title', 'Valence', 'Arousal', 'Dominance', 'Primary_Emotion'])
+
+    # Setup the album-level summary CSV
+    if not os.path.exists(ALBUM_FILE):
+        with open(ALBUM_FILE, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Artist', 'Album', 'Avg_Valence', 'Avg_Arousal', 'Avg_Dominance', 'Song_Count'])
+
+    for artist_name, albums in artists_data.items():
+        print(f"Working on artist: {artist_name}")
+        
+        for album_name in albums:
+            print(f"   Searching for album: {album_name}")
+            
+            try:
+                # Search for the album
+                album = genius.search_album(album_name, artist_name)
+                
+                if album:
+                    tracks_to_process = []
+                    # Robust check for different Genius object structures
+                    if hasattr(album, 'songs'):
+                        tracks_to_process = album.songs
+                    elif hasattr(album, 'tracks'):
+                        tracks_to_process = album.tracks
+                    
+                    print(f"      Found {len(tracks_to_process)} songs.")
+
+                    album_valence = []
+                    album_arousal = []
+                    album_dominance = []
+
+                    for item in tracks_to_process:
+                        # Normalize data types
+                        if isinstance(item, tuple): _, track = item
+                        else: track = item
+
+                        if hasattr(track, 'lyrics'): song_lyrics = track.lyrics; title = track.title
+                        elif isinstance(track, dict): song_lyrics = track.get('lyrics', ""); title = track.get('song', {}).get('title', "Unknown")
+                        else: continue
+
+                        if not song_lyrics: continue
+                        
+                        # Clean the lyrics header
+                        clean_lyrics = song_lyrics.split('Lyrics', 1)[-1] if 'Lyrics' in song_lyrics else song_lyrics
+                        
+                        # Perform analysis
+                        v, a, d, dom_emo = analyze_lyrics(clean_lyrics)
+                        
+                        album_valence.append(v)
+                        album_arousal.append(a)
+                        album_dominance.append(d)
+
+                        print(f"      > {title} | V:{v:.2f} A:{a:.2f} D:{d:.2f} | {dom_emo}")
+
+                        # Save individual song data
+                        with open(SONG_FILE, 'a', newline='', encoding='utf-8') as f:
+                            writer = csv.writer(f)
+                            writer.writerow([artist_name, album_name, title, v, a, d, dom_emo])
+
+                    # Calculate and save album averages
+                    if len(album_valence) > 0:
+                        avg_v = statistics.mean(album_valence)
+                        avg_a = statistics.mean(album_arousal)
+                        avg_d = statistics.mean(album_dominance)
+                        
+                        with open(ALBUM_FILE, 'a', newline='', encoding='utf-8') as f:
+                            writer = csv.writer(f)
+                            writer.writerow([artist_name, album_name, avg_v, avg_a, avg_d, len(album_valence)])
+                        print(f"      Album Summary Saved.")
+
+                else:
+                    print(f"      Could not find album: {album_name}")
+            
+            except Exception as e:
+                print(f"      Error processing {album_name}: {e}")
+                # Wait briefly to let the API recover
+                time.sleep(2)
+
+if __name__ == "__main__":
+    main()
