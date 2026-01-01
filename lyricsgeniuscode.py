@@ -1,8 +1,10 @@
 import lyricsgenius
 import time
+from dotenv import load_dotenv
+import os
 
-GENIUS_ACCESS_TOKEN = "YOUR_GENIUS_ACCESS_TOKEN_HERE"
-
+load_dotenv()
+GENIUS_ACCESS_TOKEN = os.getenv("GENIUS_ACCESS_TOKEN")
 genius = lyricsgenius.Genius(GENIUS_ACCESS_TOKEN)
 genius.verbose = False  # Turn off status messages
 genius.remove_section_headers = True 
