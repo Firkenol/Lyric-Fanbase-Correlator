@@ -14,8 +14,8 @@ INPUT_FILE = "lyrics_dataset_nlp_processed.csv"
 #ALBUM_FILE = "album_level_jhartmann_vad.csv"
 
 # Outputs: The final scores. Iteration 2 with improved threshholds
-SONG_FILE = "song_level_jhartmann_vad_2.csv"
-ALBUM_FILE = "album_level_jhartmann_vad_2.csv"
+SONG_FILE = "song_level_goemotion_vad.csv"
+ALBUM_FILE = "album_level_goemotion_vad.csv"
 
 
 # 1. LOAD MODEL
