@@ -13,6 +13,14 @@ from collections import Counter
 INPUT_FILE = "lyrics_dataset.csv"
 OUTPUT_FILE = "lyrics_dataset_nlp_processed.csv"
 
+# KEY CHANGE: Customize stop words to exclude negations
+# We want these words to stay in the text because they flip sentiment
+negation_words = {"no", "not", "never", "none", "nothing", "neither", "nor", "nowhere", "cannot", "cant", "wont"}
+
+# Remove them from Spacy's default stop word list so is_stop returns False for them
+for word in negation_words:
+    nlp.vocab[word].is_stop = False
+
 # 1. Semantic Noise Filter
 VOCABLES = [
     r"\b(woah|whoa|oh|ooh|ah|ahh|uh|uhh|hmm|hm|mmm)\b", 
