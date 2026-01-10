@@ -9,13 +9,18 @@ from tqdm import tqdm
 # Input: The file we created in the cleaning step
 INPUT_FILE = "lyrics_dataset_nlp_processed.csv"
 
-# Outputs: The final scores
-SONG_FILE = "song_level_jhartmann_vad.csv"
-ALBUM_FILE = "album_level_jhartmann_vad.csv"
+# Outputs: The final scores. Iteration 1 with weaker threshholds
+#SONG_FILE = "song_level_jhartmann_vad.csv"
+#ALBUM_FILE = "album_level_jhartmann_vad.csv"
+
+# Outputs: The final scores. Iteration 2 with improved threshholds
+SONG_FILE = "song_level_jhartmann_vad_2.csv"
+ALBUM_FILE = "album_level_jhartmann_vad_2.csv"
+
 
 # 1. LOAD MODEL
-print("Loading j-hartmann model...")
-classifier = pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", return_all_scores=True)
+print("Loading RoBERTa-GoEmotions model...")
+classifier = pipeline("text-classification", model="SamLowe/roberta-base-go_emotions", return_all_scores=True)
 
 # 2. VAD MAP
 vad_map = {
