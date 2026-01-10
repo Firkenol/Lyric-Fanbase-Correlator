@@ -1,168 +1,173 @@
 import pandas as pd
-import re
+import statistics
 import os
-import sys
-import spacy
-from collections import Counter
+import csv
+from transformers import pipeline
+from tqdm import tqdm
 
-INPUT_FILE = "lyrics_dataset.csv"
-OUTPUT_FILE = "lyrics_dataset_nlp_processed.csv"
+# --- CONFIGURATION ---
+# Input: The file we created in the cleaning step
+INPUT_FILE = "lyrics_dataset_nlp_processed.csv"
 
-# 1. NOISE FILTERS
-VOCABLES = [
-    r"\b(woah|whoa|oh|ooh|ah|ahh|uh|uhh|hmm|hm|mmm)\b", 
-    r"\b(la|da|na|di|doo|dum|dududu|ba|bum|du)\b", 
-    r"\b(ay|ayy|yuh|yah|yeah|yeh|yea)\b", 
-    r"\b(skrrt|skrt|grrt|brrt|bow|pow|phew)\b", 
-    r"\b(ha|haha|hahaha|heh)\b", 
-    r"\b(yo|hey|huh|what|nah|nanana)\b"
-]
+# Outputs: The final scores. Iteration 1 with weaker threshholds
+#SONG_FILE = "song_level_jhartmann_vad.csv"
+#ALBUM_FILE = "album_level_jhartmann_vad.csv"
 
-# 2. SPECIFIC SONG PURGES
-SPECIFIC_PURGES = {
-    ("My Beautiful Dark Twisted Fantasy", "Runaway"): ["look at ya", "ladies and gentlemen"],
-    ("My Beautiful Dark Twisted Fantasy", "Power"): ["21st century schizoid man"],
-    ("My Beautiful Dark Twisted Fantasy", "Monster"): ["gossip, gossip", "f-u"],
-    ("My Beautiful Dark Twisted Fantasy", "Blame Game"): ["chris rock", "yeezy taught me"], 
-    ("My Beautiful Dark Twisted Fantasy", "Who Will Survive in America"): ["DELETE_SONG"], 
-    ("My Beautiful Dark Twisted Fantasy", "See Me Now"): ["DELETE_SONG"],
-    ("Vultures 1", "Hoodrat"): ["hoodrat", "whore"],
-    ("Vultures 1", "Beg Forgiveness"): ["oh-ah-ah"],
-    ("Vultures 1", "Keys To My Life"): ["m.o"],
-    ("Vultures 1", "Paid"): ["fri-fri", "ai-ai-ai-aid"],
-    ("Vultures 2", "530"): ["da-da", "na-dana", "pa-da-la", "fa-na-dan", "sunna-wunna"],
-    ("Vultures 2", "Isabella"): ["DELETE_SONG"],
-    ("Vultures 2", "Field Trip"): ["nah-nah-nah"],
-    ("Die Lit", "Pull Up"): ["pull up"],
-    ("Die Lit", "Lean 4 Real"): ["sus", "what"],
-    ("Whole Lotta Red", "JumpOutTheHouse"): ["jump out the house"],
-    ("Whole Lotta Red", "Teen X"): ["cough syrup"],
-    ("Recovery", "Cold Wind Blows"): ["dum, du-du-du-dum"],
-    ("To Pimp a Butterfly", "For Free?"): ["this dick ain't free"]
+# Outputs: The final scores. Iteration 2 with improved threshholds
+SONG_FILE = "song_level_goemotion_vad.csv"
+ALBUM_FILE = "album_level_goemotion_vad_2.csv"
+
+
+# 1. LOAD MODEL
+print("Loading RoBERTa-GoEmotions model...")
+classifier = pipeline("text-classification", model="SamLowe/roberta-base-go_emotions", return_all_scores=True)
+
+# 2. VAD MAP
+vad_map = {
+    'admiration': [0.8, 0.4, -0.2], 'amusement': [0.7, 0.5, 0.5], 'excitement': [0.9, 0.9, 0.7],
+    'joy': [0.95, 0.7, 0.8], 'love': [0.9, 0.6, 0.6], 'pride': [0.8, 0.7, 0.9], 
+    'optimism': [0.7, 0.5, 0.7], 'gratitude': [0.8, 0.3, -0.1],
+    'anger': [-0.7, 0.9, 0.8], 'annoyance': [-0.5, 0.6, 0.4], 'disapproval': [-0.6, 0.5, 0.6],
+    'fear': [-0.7, 0.9, -0.6], 'nervousness': [-0.5, 0.8, -0.7],
+    'remorse': [-0.8, 0.2, -0.5], 'sadness': [-0.9, -0.2, -0.6], 'disappointment': [-0.7, 0.1, -0.4],
+    'embarrassment': [-0.6, 0.5, -0.7], 'grief': [-0.9, 0.2, -0.5],
+    'confusion': [-0.3, 0.6, -0.4], 'curiosity': [0.4, 0.6, 0.1], 'realization': [0.2, 0.5, 0.3],
+    'surprise': [0.5, 0.9, 0.1], 'neutral': [0.0, 0.0, 0.0],
+    'caring': [0.7, 0.2, 0.4], 'desire': [0.6, 0.8, 0.4], 'relief': [0.6, -0.3, 0.2],
+    'approval': [0.6, 0.3, 0.5], 'disgust': [-0.8, 0.6, 0.5]
 }
 
-# 3. NEGATION WORDS TO KEEP (Crucial for VAD)
-NEGATION_WORDS = {"no", "not", "never", "none", "nothing", "neither", "nor", "nowhere", "cannot", "cant", "wont"}
+def analyze_lyrics(text):
+    # Safety check for empty lyrics
+    if not isinstance(text, str) or len(text.strip()) < 5:
+        return 0.0, 0.0, 0.0, "neutral"
 
-def init_spacy_model():
-    """Safe loader that handles Windows errors and applies negation logic."""
-    print("Loading Spacy Model...")
-    try:
-        # Load the model
-        nlp_model = spacy.load("en_core_web_sm", disable=["parser", "ner"])
-        
-        # KEY FIX: Customize the vocabulary *inside* this function
-        # We tell Spacy: "Do NOT treat 'not' as a garbage stop word."
-        for word in NEGATION_WORDS:
-            if word in nlp_model.vocab:
-                nlp_model.vocab[word].is_stop = False
-        
-        print("Model loaded & Negations preserved.")
-        return nlp_model
-        
-    except OSError:
-        print("Error: Spacy model not found. Run: python -m spacy download en_core_web_sm")
-        sys.exit()
-
-def nlp_clean_logic(row, nlp_model):
-    """Cleaning logic that accepts the nlp object as an argument."""
-    text = str(row['Lyrics'])
-    album = row['Album']
-    title = row['Title']
+    chunk_size = 512
+    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
     
-    # Phase 1: Manual Purges
-    if (album, title) in SPECIFIC_PURGES:
-        targets = SPECIFIC_PURGES[(album, title)]
-        if targets == ["DELETE_SONG"]:
-            return ""
-        for target in targets:
-            text = re.sub(re.escape(target), "", text, flags=re.IGNORECASE)
-
-    # Regex Cleaning
-    text = re.sub(r'\[.*?\]', ' ', text)
-    text = re.sub(r'\{.*?\}', ' ', text)
-    text = re.sub(r'\d+\s?Contributors.*', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'Embed$', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\b(\w+)-\1\b', r'\1', text, flags=re.IGNORECASE) 
-
-    for pattern in VOCABLES:
-        text = re.sub(pattern, " ", text, flags=re.IGNORECASE)
-        
-    # Phase 2: Spacy NLP (Using the passed nlp_model)
-    doc = nlp_model(text)
-    clean_tokens = []
+    total_v, total_a, total_d = 0, 0, 0
+    emotion_scores = {} 
+    valid_chunks = 0
     
-    for token in doc:
-        # 1. Check Stop Words (Negations are now FALSE here, so they are kept)
-        if token.is_stop:
-            continue
-            
-        # 2. Check Punctuation/Numbers
-        if token.is_punct or token.like_num:
-            continue
-            
-        # 3. Lemmatize
-        lemma = token.lemma_.lower().strip()
+    for chunk in chunks:
+        if len(chunk.strip()) < 10: continue
         
-        # 4. Length check (Keep short words if they are negations like 'no')
-        if len(lemma) < 2 and lemma not in NEGATION_WORDS:
+        try:
+            results = classifier(chunk)[0]
+            
+            chunk_v, chunk_a, chunk_d = 0, 0, 0
+            
+            for res in results:
+                lbl = res['label']
+                prob = res['score']
+                
+                emotion_scores[lbl] = emotion_scores.get(lbl, 0) + prob
+                
+                if lbl in vad_map:
+                    v, a, d = vad_map[lbl]
+                    chunk_v += v * prob
+                    chunk_a += a * prob
+                    chunk_d += d * prob
+            
+            total_v += chunk_v
+            total_a += chunk_a
+            total_d += chunk_d
+            valid_chunks += 1
+            
+        except Exception:
             continue
             
-        clean_tokens.append(lemma)
+    if valid_chunks == 0:
+        return 0.0, 0.0, 0.0, "neutral"
         
-    text = " ".join(clean_tokens)
-
-    # Phase 3: Repetition Reduction
-    lines = text.split('\n')
-    unique_lines = []
-    prev_line = ""
-    for line in lines:
-        clean_line = line.strip()
-        if not clean_line: continue
-        if clean_line == prev_line: continue
-        unique_lines.append(clean_line)
-        prev_line = clean_line
-
-    return " ".join(unique_lines)
+    avg_v = total_v / valid_chunks
+    avg_a = total_a / valid_chunks
+    avg_d = total_d / valid_chunks
+    
+    # Soft Neutral Filter
+    sorted_emotions = sorted(emotion_scores.items(), key=lambda x: x[1], reverse=True)
+    winner, winner_score = sorted_emotions[0]
+    
+    if winner == 'neutral' and len(sorted_emotions) > 1:
+        runner_up, runner_score = sorted_emotions[1]
+        if runner_score > (winner_score * 0.6):
+            dominant_emotion = runner_up
+        else:
+            dominant_emotion = winner
+    else:
+        dominant_emotion = winner
+    
+    return avg_v, avg_a, avg_d, dominant_emotion
 
 def main():
-    # Check file exists
+    # 3. READ LOCAL FILE (Instead of Genius)
     if not os.path.exists(INPUT_FILE):
-        print(f"Error: {INPUT_FILE} not found.")
+        print(f"Error: {INPUT_FILE} not found. Run the cleaning script first.")
         return
 
     print(f"Reading {INPUT_FILE}...")
     df = pd.read_csv(INPUT_FILE)
 
-    # Initialize Spacy HERE
-    nlp = init_spacy_model()
+    # Dictionary to hold album data for aggregation
+    # Format: {(Artist, Album): {'v':[], 'a':[], 'd':[], 'emo':[]}}
+    album_data = {}
 
-    print("Running Cleaning Pipeline...")
+    # 4. PROCESS SONGS
+    print("Starting VAD Analysis...")
     
-    # Pass the 'nlp' object into the function using lambda
-    try:
-        from tqdm import tqdm
-        tqdm.pandas()
-        df['Processed_Lyrics'] = df.progress_apply(lambda row: nlp_clean_logic(row, nlp), axis=1)
-    except ImportError:
-        df['Processed_Lyrics'] = df.apply(lambda row: nlp_clean_logic(row, nlp), axis=1)
+    with open(SONG_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Artist', 'Album', 'Title', 'Valence', 'Arousal', 'Dominance', 'Primary_Emotion'])
+        
+        # Iterate through the DataFrame
+        for index, row in tqdm(df.iterrows(), total=df.shape[0]):
+            
+            # Use 'Processed_Lyrics' from the cleaning step
+            lyrics = row['Processed_Lyrics']
+            
+            v, a, d, emo = analyze_lyrics(lyrics)
+            
+            # Write Song Result
+            writer.writerow([row['Artist'], row['Album'], row['Title'], v, a, d, emo])
+            
+            # Add to Album Aggregator
+            key = (row['Artist'], row['Album'])
+            if key not in album_data:
+                album_data[key] = {'v': [], 'a': [], 'd': [], 'emotions': []}
+            
+            album_data[key]['v'].append(v)
+            album_data[key]['a'].append(a)
+            album_data[key]['d'].append(d)
+            album_data[key]['emotions'].append(emo)
 
-    # Filter Empty
-    initial_count = len(df)
-    df = df[df['Processed_Lyrics'].str.len() > 5] 
-    final_count = len(df)
+    print(f"Song-level data saved to {SONG_FILE}")
+
+    # 5. PROCESS ALBUMS
+    print("Calculating Album Averages...")
     
-    print(f"Removed {initial_count - final_count} empty tracks.")
+    with open(ALBUM_FILE, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Artist', 'Album', 'Avg_Valence', 'Avg_Arousal', 'Avg_Dominance', 'Album_Primary_Emotion', 'Song_Count'])
+        
+        for (artist, album), stats in album_data.items():
+            count = len(stats['v'])
+            if count == 0: continue
+            
+            avg_v = statistics.mean(stats['v'])
+            avg_a = statistics.mean(stats['a'])
+            avg_d = statistics.mean(stats['d'])
+            
+            # Calculate Mode (Most common emotion)
+            try:
+                primary_emo = statistics.mode(stats['emotions'])
+            except:
+                # If tie, pick the most frequent one manually
+                primary_emo = max(set(stats['emotions']), key=stats['emotions'].count)
 
-    # Validate Negations are present
-    all_text = " ".join(df['Processed_Lyrics'])
-    words = all_text.split()
-    print("\nMost Common Words (Check if 'not/no' are here):")
-    print(Counter(words).most_common(15))
+            writer.writerow([artist, album, avg_v, avg_a, avg_d, primary_emo, count])
+            print(f"   > {album}: {primary_emo.upper()} (V:{avg_v:.2f} A:{avg_a:.2f} D:{avg_d:.2f})")
 
-    # Save
-    df[['Artist', 'Album', 'Title', 'Processed_Lyrics']].to_csv(OUTPUT_FILE, index=False)
-    print(f"\n💾 Saved to {OUTPUT_FILE}")
+    print(f"Album-level summaries saved to {ALBUM_FILE}")
 
 if __name__ == "__main__":
     main()
