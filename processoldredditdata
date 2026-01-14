@@ -1,0 +1,252 @@
+import json
+import csv
+import datetime
+import re
+import os
+import emoji
+from tqdm import tqdm
+
+
+# The folder with the uncompressed files (no extension)
+INPUT_DIRECTORY = r"D:\Lyrics-Fanbase-Correlator\Lyric-Fanbase-Correlator\raw"
+OUTPUT_DIRECTORY = "Processed_Artist_Data"  # Will create this folder for outputs
+
+# Time Window
+WINDOW_PRE = 14
+WINDOW_POST = 14 
+
+FILENAME_MAP = {
+    "SabrinaCarpenter": "Sabrina Carpenter",
+    "TameImpala": "Tame Impala",
+    "TaylorSwift": "Taylor Swift",
+    "TheWeeknd": "The Weeknd",
+    "billieeilish": "Billie Eilish",
+    "Drizzy": "Drake",
+    "Eminem": "Eminem",
+    "greenday": "Green Day",
+    "Jcole": "J. Cole",
+    "JuiceWRLD": "Juice WRLD",
+    "Kanye": "Kanye",
+    "KendrickLamar": "Kendrick Lamar",
+    "MacMiller": "Mac Miller"
+}
+
+# 2. ALBUM RELEASE DATES (Used to find the eras)
+ALBUM_DATES = {
+    "Eminem": {
+        "Recovery": "2010-06-18",
+        "Music to be Murdered By": "2020-01-17",
+        "The Death of Slim Shady": "2024-07-12"
+    },
+    "Taylor Swift": {
+        "Speak Now": "2010-10-25", 
+        "The Tortured Poets Department": "2024-04-19"
+    },
+    "Kanye": {
+        "My Beautiful Dark Twisted Fantasy": "2010-11-22",
+        "Vultures 1": "2024-02-10",
+        "Vultures 2": "2024-08-03"
+    },
+    "Kendrick Lamar": {
+        "good kid, m.A.A.d city": "2012-10-22",
+        "Mr. Morale & the Big Steppers": "2022-05-13",
+        "GNX": "2024-11-22"
+    },
+    "Drake": {
+        "Views": "2016-04-29",
+        "For All The Dogs": "2023-10-06",
+        "Some Sexy Songs 4 U": "2025-02-14"
+    },
+    "The Weeknd": {
+        "Kiss Land": "2013-09-10",
+        "Dawn FM": "2022-01-07",
+    },
+    "J. Cole": {
+        "Born Sinner": "2013-06-18",
+        "The Off-Season": "2021-05-14",
+        "Might Delete Later": "2024-04-05"
+    },
+    "Billie Eilish": {
+        "WHEN WE ALL FALL ASLEEP": "2019-03-29",
+        "Happier Than Ever": "2021-07-30",
+        "HIT ME HARD AND SOFT": "2024-05-17"
+    },
+    "Playboi Carti": {
+        "Die Lit": "2018-05-11",
+        "Whole Lotta Red": "2020-12-25",
+    },
+    "Juice WRLD": {
+        "Goodbye & Good Riddance": "2018-05-23",
+        "Fighting Demons": "2021-12-10",
+        "The Party Never Ends": "2024-11-30"
+    },
+    "Mac Miller": {
+        "Blue Slide Park": "2011-11-08",
+        "Circles": "2020-01-17",
+    },
+    "Green Day": {
+        "¡Uno!": "2012-09-21",
+        "Father of All Motherfuckers": "2020-02-07",
+        "Saviors": "2024-01-19"
+    },
+    "Tame Impala": {
+        "Lonerism": "2012-10-05",
+        "The Slow Rush": "2020-02-14",
+    },
+    "Sabrina Carpenter": {
+        "Eyes Wide Open": "2015-04-14",
+        "Short n' Sweet": "2024-08-23",
+    }
+}
+
+# Bot/Mod phrases to clean out
+BOT_PHRASES = [
+    "i am a bot", 
+    "action was performed automatically", 
+    "submission has been removed",
+    "contact the moderators",
+    "message the mods"
+]
+
+GIF_DOMAINS = ["giphy.com", "tenor.com", "imgur.com", ".gif"]
+
+def get_artist_windows(artist_key):
+    # Returns list of windows for this specific artist
+    windows = []
+    if artist_key not in ALBUM_DATES:
+        return []
+    
+    for album, date_str in ALBUM_DATES[artist_key].items():
+        try:
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+            start = dt - datetime.timedelta(days=WINDOW_PRE)
+            end = dt + datetime.timedelta(days=WINDOW_POST)
+            windows.append({
+                "album": album,
+                "start_ts": int(start.timestamp()),
+                "end_ts": int(end.timestamp())
+            })
+        except ValueError:
+            continue
+    return windows
+
+def check_window(created_utc, windows):
+    for w in windows:
+        if w["start_ts"] <= created_utc <= w["end_ts"]:
+            return w["album"]
+    return None
+
+def clean_text(text):
+    text = emoji.replace_emoji(text, replace='')
+    text = re.sub(r'\[.*?\]\(.*?\)', '', text) # Remove markdown links
+    text = re.sub(r'http\S+', '', text) # Remove URLs
+    text = " ".join(text.split())
+    return text
+
+def is_spam_or_bot(text):
+    text_lower = text.lower()
+    # Check for removed tags
+    if text_lower in ["[removed]", "[deleted]", ""]:
+        return True
+    # Check for GIFs
+    if any(d in text_lower for d in GIF_DOMAINS):
+        return True
+    # Check for Automod/Bot messages
+    if any(phrase in text_lower for phrase in BOT_PHRASES):
+        return True
+    return False
+
+def process_artist(artist_name, file_prefix, windows):
+    output_filename = os.path.join(OUTPUT_DIRECTORY, f"{artist_name}_Filtered.csv")
+    print(f"--> Processing {artist_name} (Saving to {output_filename})...")
+
+    # Files to look for
+    target_files = [f"{file_prefix}_comments", f"{file_prefix}_submissions"]
+    
+    kept_count = 0
+    
+    with open(output_filename, 'w', newline='', encoding='utf-8') as out_file:
+        writer = csv.writer(out_file)
+        writer.writerow(['id', 'Artist', 'Album', 'Date', 'Text', 'Score'])
+        
+        for fname in target_files:
+            full_path = os.path.join(INPUT_DIRECTORY, fname)
+            
+            if not os.path.exists(full_path):
+                # Try adding no extension, or maybe it has one hidden? 
+                # Assuming raw files have NO extension as user stated.
+                print(f"    Skipping {fname} (Not found in raw folder)")
+                continue
+            
+            print(f"    Reading {fname}...")
+            
+            # Count lines for progress bar (optional, might take time for huge files)
+            # If files are massive, remove the total=... from tqdm to start immediately
+            try:
+                with open(full_path, 'r', encoding='utf-8') as f:
+                    for line in tqdm(f, desc=f"Scanning {fname}", unit="lines"):
+                        try:
+                            # Skip empty lines
+                            if not line.strip(): continue
+                            
+                            obj = json.loads(line)
+                            created = int(obj.get('created_utc', 0))
+                            
+                            # 1. TIME CHECK
+                            relevant_album = check_window(created, windows)
+                            if not relevant_album:
+                                continue
+                            
+                            # 2. GET TEXT (Handle posts vs comments)
+                            body = obj.get('body') or obj.get('selftext') or obj.get('title') or ""
+                            
+                            # 3. SPAM/BOT CHECK
+                            if is_spam_or_bot(body):
+                                continue
+                            
+                            # 4. CLEANING
+                            clean_body = clean_text(body)
+                            if len(clean_body) < 3: # Skip "lol" or empty
+                                continue
+                            
+                            readable_date = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc).strftime('%Y-%m-%d')
+                            
+                            writer.writerow([
+                                obj.get('id'), 
+                                artist_name,
+                                relevant_album,
+                                readable_date, 
+                                clean_body, 
+                                obj.get('score')
+                            ])
+                            kept_count += 1
+                            
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            except Exception as e:
+                print(f"    Error reading {fname}: {e}")
+
+    print(f"    Finished {artist_name}. Saved {kept_count} rows.")
+
+def main():
+    if not os.path.exists(INPUT_DIRECTORY):
+        print(f"Error: Input directory not found: {INPUT_DIRECTORY}")
+        return
+    
+    if not os.path.exists(OUTPUT_DIRECTORY):
+        os.makedirs(OUTPUT_DIRECTORY)
+
+    print(f"Starting processing... (Window: -{WINDOW_PRE} days to +{WINDOW_POST} days)")
+    
+    # Iterate through our map and process each artist individually
+    for file_prefix, artist_name in FILENAME_MAP.items():
+        windows = get_artist_windows(artist_name)
+        if windows:
+            process_artist(artist_name, file_prefix, windows)
+        else:
+            print(f"Skipping {artist_name} (No album dates configured)")
+
+    print("\nAll artists processed.")
+
+if __name__ == "__main__":
+    main()
