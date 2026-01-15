@@ -16,7 +16,16 @@ WINDOW_PRE = 14
 WINDOW_POST = 14 
 
 FILENAME_MAP = {
+    "SabrinaCarpenter": "Sabrina Carpenter",
+    "TameImpala": "Tame Impala",
+    "TaylorSwift": "Taylor Swift",
+    "TheWeeknd": "The Weeknd",
+    "billieeilish": "Billie Eilish",
     "Drizzy": "Drake",
+    "Eminem": "Eminem",
+    "greenday": "Green Day",
+    "Jcole": "J. Cole",
+    "JuiceWRLD": "Juice WRLD",
     "Kanye": "Kanye",
     "KendrickLamar": "Kendrick Lamar",
     "MacMiller": "Mac Miller"
