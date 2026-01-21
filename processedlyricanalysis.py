@@ -7,7 +7,7 @@ from tqdm import tqdm
 # Files
 input_file = "lyrics_dataset_nlp_processed.csv"
 song_output = "song_level_empathetic.csv"
-album_output = "album_level_empathetic.csv"
+album_output = "album_level_empathetic_test.csv"
 
 # Model: Trained on the EmpatheticDialogues dataset (Rashkin et al., 2019)
 # 32 Labels including: Nostalgic, Sentimental, Furious, Devastated, Yearning
