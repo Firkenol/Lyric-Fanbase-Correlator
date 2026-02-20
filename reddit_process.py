@@ -14,7 +14,8 @@ SUBREDDIT_MAP = {
     "drizzy": "Drake", "kendricklamar": "Kendrick Lamar",
     "juicewrld": "Juice WRLD", "billieeilish": "Billie Eilish", "theweeknd": "The Weeknd",
     "greenday": "Green Day", "jcole": "J. Cole", "macmiller": "Mac Miller",
-    "playboicarti": "Playboi Carti", "tameimpala": "Tame Impala"
+    "playboicarti": "Playboi Carti", "tameimpala": "Tame Impala",
+    "drake": "Drake" 
 }
 
 def setup_classifier():
@@ -31,9 +32,13 @@ def clean_text(text):
     return text.strip()
 
 def get_artist(filename):
-    f = filename.lower()
+    # strip spaces out of the filename so "Billie Eilish" becomes "billieeilish"
+    f = filename.lower().replace(" ", "")
     for sub, artist in SUBREDDIT_MAP.items():
-        if sub in f: return artist
+        # check against both the subreddit name and the official name just to be safe
+        artist_no_space = artist.lower().replace(" ", "")
+        if sub in f or artist_no_space in f: 
+            return artist
     return None
 
 def main():
@@ -42,7 +47,7 @@ def main():
 
     classifier = setup_classifier()
     
-    # strictly target filtered files only
+    # strictly target filtered files
     all_files = [f for f in os.listdir(SOURCE_DIR) if f.endswith(".csv") and "filtered" in f.lower()]
     artist_file_groups = {}
     
@@ -70,7 +75,6 @@ def main():
                 temp_df = df[[text_col, date_col]].copy()
                 temp_df = temp_df.rename(columns={text_col: 'Text', date_col: 'Date'})
                 
-                # convert unix timestamps if present
                 if df[date_col].dtype != 'object':
                     try:
                         temp_df['Date'] = pd.to_datetime(temp_df['Date'], unit='s')
@@ -79,15 +83,13 @@ def main():
                 
                 merged_data.append(temp_df)
             else:
-                print(f"!!! WARNING: Skipped {f}. Could not find Text or Date columns. Found: {list(df.columns)}")
+                print(f"!!! WARNING: Skipped {f}. Could not find Text or Date columns.")
         
         if not merged_data: 
-            print(f"!!! SKIP: No valid data found for {artist}")
             continue
 
         master_df = pd.concat(merged_data).dropna(subset=['Text', 'Date'])
         
-        # remove duplicate entries
         original_count = len(master_df)
         master_df = master_df.drop_duplicates(subset=['Text'])
         new_count = len(master_df)
