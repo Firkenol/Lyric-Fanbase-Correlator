@@ -5,7 +5,8 @@ import seaborn as sns
 from scipy.stats import pearsonr, ttest_ind
 
 REDDIT_DIR = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
-LYRICS_DIR = r"D:\Lyrics-Fanbase-Correlator\Lyrics_VAD_Data"
+# Point directly to your raw lyrics file to bypass the missing column error
+LYRICS_FILE = r"D:\Lyrics-Fanbase-Correlator\song_level_goemotions.csv"
 OUTPUT_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Results"
 GRAPH_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Graphs"
 
@@ -60,28 +61,32 @@ def run_event_study():
         if not os.path.exists(d): 
             os.makedirs(d)
 
+    # Load raw lyrics and normalize artist names for matching
+    raw_lyrics = pd.read_csv(LYRICS_FILE)
+    raw_lyrics['clean_artist'] = raw_lyrics['Artist'].astype(str).str.lower().str.replace(" ", "")
+
     reddit_files = [f for f in os.listdir(REDDIT_DIR) if f.endswith('_FullDist.csv')]
     master_stats = []
     
-    # Widen the analysis window to catch more data
     WINDOW_DAYS = 21
     MIN_POSTS = 3
 
     for rf in reddit_files:
         artist = rf.replace('_FullDist.csv', '')
-        lyrics_file = os.path.join(LYRICS_DIR, f"{artist}_Lyrics_VAD.csv")
+        reddit_artist_clean = artist.lower().replace(" ", "")
         
-        if not os.path.exists(lyrics_file): 
+        # Pull only this artist's lyrics to prevent album collision
+        artist_songs = raw_lyrics[raw_lyrics['clean_artist'] == reddit_artist_clean].copy()
+        if artist_songs.empty:
+            print(f"!!! Could not find lyrics for {artist}. Skipping.")
             continue
             
         print(f"Running Event Study for {artist}...")
-        lyrics_df = pd.read_csv(lyrics_file)
         
-        # Bug Fix: Map the exact release date directly to the lyrics album name
-        # This prevents Eminem from inheriting Mac Miller's album
-        lyrics_df['Release_Date'] = lyrics_df['Album'].map(ALBUM_DATES)
-        lyrics_df['Release_Date'] = pd.to_datetime(lyrics_df['Release_Date'])
-        lyrics_df = lyrics_df.dropna(subset=['Release_Date'])
+        album_vad = artist_songs.groupby('Album')[['Valence', 'Arousal', 'Dominance']].mean().reset_index()
+        album_vad['Release_Date'] = album_vad['Album'].map(ALBUM_DATES)
+        album_vad['Release_Date'] = pd.to_datetime(album_vad['Release_Date'])
+        album_vad = album_vad.dropna(subset=['Release_Date'])
         
         reddit_df = pd.read_csv(os.path.join(REDDIT_DIR, rf), low_memory=False)
         reddit_df['Date'] = pd.to_datetime(reddit_df['Date'], errors='coerce')
@@ -90,7 +95,7 @@ def run_event_study():
 
         album_deltas = []
 
-        for _, row in lyrics_df.iterrows():
+        for _, row in album_vad.iterrows():
             release_date = row['Release_Date']
             album_name = row['Album']
             
