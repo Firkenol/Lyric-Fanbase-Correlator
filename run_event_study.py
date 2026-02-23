@@ -4,12 +4,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import pearsonr, ttest_ind
 
-REDDIT_DIR = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
+# The script now looks in BOTH folders
+DIR_ANALYSIS = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
+DIR_PROCESSED = r"D:\Lyrics-Fanbase-Correlator\Processed_Artist_Data"
 LYRICS_FILE = r"D:\Lyrics-Fanbase-Correlator\song_level_goemotions.csv"
+
 OUTPUT_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Results"
 GRAPH_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Graphs"
 
-# actual album release dates
 ALBUM_DATES = {
     "Recovery": "2010-06-18", "Music to be Murdered By": "2020-01-17", "The Death of Slim Shady": "2024-07-12",
     "Speak Now": "2010-10-25", "The Tortured Poets Department": "2024-04-19", "The Life of a Showgirl": "2025-10-03", 
@@ -27,7 +29,14 @@ ALBUM_DATES = {
     "Lonerism": "2012-10-05", "The Slow Rush": "2020-02-14", "Deadbeat": "2025-10-17" 
 }
 
-# vad mapping based on nrc lexicon
+SUBREDDIT_MAP = {
+    "eminem": "Eminem", "taylorswift": "Taylor Swift", "sabrinacarpenter": "Sabrina Carpenter",
+    "kanye": "Kanye West", "drizzy": "Drake", "kendricklamar": "Kendrick Lamar",
+    "juicewrld": "Juice WRLD", "billieeilish": "Billie Eilish", "theweeknd": "The Weeknd",
+    "greenday": "Green Day", "jcole": "J. Cole", "macmiller": "Mac Miller",
+    "playboicarti": "Playboi Carti", "tameimpala": "Tame Impala", "drake": "Drake"
+}
+
 VAD_DICT = {
     'admiration': [0.88, 0.52, 0.71], 'amusement': [0.89, 0.65, 0.58], 'anger': [0.16, 0.86, 0.65],
     'annoyance': [0.22, 0.68, 0.55], 'approval': [0.77, 0.48, 0.66], 'caring': [0.82, 0.45, 0.51],
@@ -41,6 +50,13 @@ VAD_DICT = {
     'neutral': [0.50, 0.50, 0.50]
 }
 
+def get_artist_from_filename(filename):
+    f = filename.lower().replace(" ", "")
+    for sub, artist in SUBREDDIT_MAP.items():
+        if sub in f or artist.lower().replace(" ", "") in f:
+            return artist
+    return None
+
 def calculate_vad(df):
     emotions = [e for e in VAD_DICT.keys() if e in df.columns]
     if not emotions:
@@ -50,7 +66,6 @@ def calculate_vad(df):
     a_weights = pd.Series({e: VAD_DICT[e][1] for e in emotions})
     d_weights = pd.Series({e: VAD_DICT[e][2] for e in emotions})
     
-    # avoid div by zero
     prob_sum = df[emotions].sum(axis=1).replace(0, 1)
     
     df['Valence'] = df[emotions].dot(v_weights) / prob_sum
@@ -60,38 +75,68 @@ def calculate_vad(df):
 
 def run_event_study():
     for d in [OUTPUT_DIR, GRAPH_DIR]:
-        if not os.path.exists(d): 
-            os.makedirs(d)
+        if not os.path.exists(d): os.makedirs(d)
 
-    # get raw lyrics and prep for merge
     raw_lyrics = pd.read_csv(LYRICS_FILE)
     raw_lyrics['clean_artist'] = raw_lyrics['Artist'].astype(str).str.lower().str.replace(" ", "")
 
-    reddit_files = [f for f in os.listdir(REDDIT_DIR) if f.endswith('_FullDist.csv')]
+    # Gather all files from BOTH directories
+    all_files = []
+    if os.path.exists(DIR_ANALYSIS):
+        all_files.extend([os.path.join(DIR_ANALYSIS, f) for f in os.listdir(DIR_ANALYSIS) if f.endswith('.csv')])
+    if os.path.exists(DIR_PROCESSED):
+        all_files.extend([os.path.join(DIR_PROCESSED, f) for f in os.listdir(DIR_PROCESSED) if f.endswith('.csv')])
+
+    # Group files by artist
+    artist_files = {}
+    for path in all_files:
+        filename = os.path.basename(path)
+        artist = get_artist_from_filename(filename)
+        if artist:
+            if artist not in artist_files: artist_files[artist] = []
+            artist_files[artist].append(path)
+
     master_stats = []
-    
     WINDOW_DAYS = 21
     MIN_POSTS = 3
 
-    for rf in reddit_files:
-        artist = rf.replace('_FullDist.csv', '')
-        reddit_artist_clean = artist.lower().replace(" ", "")
-        
-        artist_songs = raw_lyrics[raw_lyrics['clean_artist'] == reddit_artist_clean].copy()
-        if artist_songs.empty:
-            print(f"Skipping {artist} - no lyrics found.")
-            continue
+    for artist, files in artist_files.items():
+        artist_songs = raw_lyrics[raw_lyrics['clean_artist'] == artist.lower().replace(" ", "")].copy()
+        if artist_songs.empty: continue
             
-        print(f"Running Event Study for {artist}...")
+        print(f"\n--- Running Event Study for {artist} ---")
         
         album_vad = artist_songs.groupby('Album')[['Valence', 'Arousal', 'Dominance']].mean().reset_index()
         album_vad['Release_Date'] = album_vad['Album'].map(ALBUM_DATES)
         album_vad['Release_Date'] = pd.to_datetime(album_vad['Release_Date'])
         album_vad = album_vad.dropna(subset=['Release_Date'])
         
-        reddit_df = pd.read_csv(os.path.join(REDDIT_DIR, rf), low_memory=False)
-        reddit_df['Date'] = pd.to_datetime(reddit_df['Date'], errors='coerce')
-        reddit_df = reddit_df.dropna(subset=['Date'])
+        # Merge all Reddit data for this artist
+        merged_reddit = []
+        has_emotion_columns = False
+        
+        for f in files:
+            df = pd.read_csv(f, low_memory=False)
+            
+            # Find the date column
+            date_col = next((c for c in ['Date', 'created_utc', 'timestamp'] if c in df.columns), None)
+            if not date_col: continue
+                
+            df['Date'] = pd.to_datetime(df[date_col], errors='coerce', unit='s' if df[date_col].dtype != 'object' else None)
+            df = df.dropna(subset=['Date'])
+            
+            # Check if this file has GoEmotions AI data
+            if 'joy' in df.columns and 'anger' in df.columns:
+                has_emotion_columns = True
+                merged_reddit.append(df)
+            else:
+                print(f"   [Skipped {os.path.basename(f)}: Needs to be run through GoEmotions AI first]")
+                
+        if not merged_reddit:
+            print(f"   !!! No AI-processed data found for {artist}. You must run their MASTER/COMMENTS files through the GoEmotions script.")
+            continue
+            
+        reddit_df = pd.concat(merged_reddit)
         reddit_df = calculate_vad(reddit_df)
 
         album_deltas = []
@@ -110,7 +155,6 @@ def run_event_study():
                 continue 
                 
             album_record = {'Artist': artist, 'Album': album_name}
-            
             for dim in ['Valence', 'Arousal', 'Dominance']:
                 pre_mean = pre_data[dim].mean()
                 post_mean = post_data[dim].mean()
@@ -126,8 +170,7 @@ def run_event_study():
                 
             album_deltas.append(album_record)
 
-        if not album_deltas: 
-            continue
+        if not album_deltas: continue
             
         delta_df = pd.DataFrame(album_deltas)
         delta_df.to_csv(os.path.join(OUTPUT_DIR, f"{artist}_Album_Shifts.csv"), index=False)
@@ -158,9 +201,7 @@ def run_event_study():
     if master_stats:
         final_df = pd.DataFrame(master_stats)
         final_df.to_csv(os.path.join(OUTPUT_DIR, "Master_Correlation_Results.csv"), index=False)
-        print("Done.")
-    else:
-        print("No valid data.")
+        print("\nAll Done! Master Correlation Table Generated.")
 
 if __name__ == "__main__":
     run_event_study()
