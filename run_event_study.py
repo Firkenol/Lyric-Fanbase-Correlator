@@ -5,11 +5,11 @@ import seaborn as sns
 from scipy.stats import pearsonr, ttest_ind
 
 REDDIT_DIR = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
-# Point directly to your raw lyrics file to bypass the missing column error
 LYRICS_FILE = r"D:\Lyrics-Fanbase-Correlator\song_level_goemotions.csv"
 OUTPUT_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Results"
 GRAPH_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Graphs"
 
+# actual album release dates
 ALBUM_DATES = {
     "Recovery": "2010-06-18", "Music to be Murdered By": "2020-01-17", "The Death of Slim Shady": "2024-07-12",
     "Speak Now": "2010-10-25", "The Tortured Poets Department": "2024-04-19", "The Life of a Showgirl": "2025-10-03", 
@@ -27,6 +27,7 @@ ALBUM_DATES = {
     "Lonerism": "2012-10-05", "The Slow Rush": "2020-02-14", "Deadbeat": "2025-10-17" 
 }
 
+# vad mapping based on nrc lexicon
 VAD_DICT = {
     'admiration': [0.88, 0.52, 0.71], 'amusement': [0.89, 0.65, 0.58], 'anger': [0.16, 0.86, 0.65],
     'annoyance': [0.22, 0.68, 0.55], 'approval': [0.77, 0.48, 0.66], 'caring': [0.82, 0.45, 0.51],
@@ -49,6 +50,7 @@ def calculate_vad(df):
     a_weights = pd.Series({e: VAD_DICT[e][1] for e in emotions})
     d_weights = pd.Series({e: VAD_DICT[e][2] for e in emotions})
     
+    # avoid div by zero
     prob_sum = df[emotions].sum(axis=1).replace(0, 1)
     
     df['Valence'] = df[emotions].dot(v_weights) / prob_sum
@@ -61,7 +63,7 @@ def run_event_study():
         if not os.path.exists(d): 
             os.makedirs(d)
 
-    # Load raw lyrics and normalize artist names for matching
+    # get raw lyrics and prep for merge
     raw_lyrics = pd.read_csv(LYRICS_FILE)
     raw_lyrics['clean_artist'] = raw_lyrics['Artist'].astype(str).str.lower().str.replace(" ", "")
 
@@ -75,10 +77,9 @@ def run_event_study():
         artist = rf.replace('_FullDist.csv', '')
         reddit_artist_clean = artist.lower().replace(" ", "")
         
-        # Pull only this artist's lyrics to prevent album collision
         artist_songs = raw_lyrics[raw_lyrics['clean_artist'] == reddit_artist_clean].copy()
         if artist_songs.empty:
-            print(f"!!! Could not find lyrics for {artist}. Skipping.")
+            print(f"Skipping {artist} - no lyrics found.")
             continue
             
         print(f"Running Event Study for {artist}...")
@@ -157,9 +158,9 @@ def run_event_study():
     if master_stats:
         final_df = pd.DataFrame(master_stats)
         final_df.to_csv(os.path.join(OUTPUT_DIR, "Master_Correlation_Results.csv"), index=False)
-        print("Event Study Complete. Check the Output and Graph folders.")
+        print("Done.")
     else:
-        print("No valid data found to correlate.")
+        print("No valid data.")
 
 if __name__ == "__main__":
     run_event_study()
