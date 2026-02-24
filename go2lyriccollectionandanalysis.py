@@ -104,7 +104,7 @@ artists_data = {
     "Eminem": ["Recovery", "Music to be Murdered By", "The Death of Slim Shady"],
     "Taylor Swift": ["Speak Now", "The Tortured Poets Department", "The Life of a Showgirl"],
     "Sabrina Carpenter": ["Eyes Wide Open", "Short n' Sweet", "Man's Best Friend"],
-    "Kanye West": ["My Beautiful Dark Twisted Fantasy", "Vultures 1", "Vultures 2"],
+    "Kanye West": ["Yeezus", "Vultures 1", "Vultures 2"],
     "Drake": ["Views", "For All The Dogs", "Some Sexy Songs 4 U"],
     "Kendrick Lamar": ["good kid, m.A.A.d city", "Mr. Morale & the Big Steppers", "GNX"],
     "Juice WRLD": ["Goodbye & Good Riddance", "Fighting Demons", "The Party Never Ends"],
@@ -112,7 +112,7 @@ artists_data = {
     "The Weeknd": ["Kiss Land", "Dawn FM", "Hurry Up Tomorrow"],
     "Green Day": ["¡Uno!", "Father of All Motherfuckers", "Saviors"],
     "J. Cole": ["Born Sinner", "The Off-Season", "Might Delete Later"],
-    "Mac Miller": ["Blue Slide Park", "Circles", "Balloonerism"],
+    "Mac Miller": ["Swimming", "Circles", "Balloonerism"],
     "Playboi Carti": ["Die Lit", "Whole Lotta Red", "MUSIC"],
     "Tame Impala": ["Lonerism", "The Slow Rush", "Deadbeat"]
 }
