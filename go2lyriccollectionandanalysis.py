@@ -9,7 +9,7 @@ from transformers import pipeline
 
 # 1. SETUP
 load_dotenv()
-token = os.getenv("GENIUS_ACCESS_TOKEN")
+token = "t7Dyu5aBr6n5ylo0napiP4N7N5sIli5NHBwEC79ratXrKs_QdQzGINPczcEYkjsm"
 
 if not token:
     print("Error: GENIUS_ACCESS_TOKEN not found.")
