@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import pearsonr, ttest_ind
 
-# The script now looks in BOTH folders
 DIR_ANALYSIS = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
 DIR_PROCESSED = r"D:\Lyrics-Fanbase-Correlator\Processed_Artist_Data"
 LYRICS_FILE = r"D:\Lyrics-Fanbase-Correlator\song_level_roberta_vad_fixed.csv"
@@ -80,14 +79,13 @@ def run_event_study():
     raw_lyrics = pd.read_csv(LYRICS_FILE)
     raw_lyrics['clean_artist'] = raw_lyrics['Artist'].astype(str).str.lower().str.replace(" ", "")
 
-    # Gather all files from BOTH directories
+    # Look in both folders to catch the 2025 MASTER files
     all_files = []
     if os.path.exists(DIR_ANALYSIS):
         all_files.extend([os.path.join(DIR_ANALYSIS, f) for f in os.listdir(DIR_ANALYSIS) if f.endswith('.csv')])
     if os.path.exists(DIR_PROCESSED):
         all_files.extend([os.path.join(DIR_PROCESSED, f) for f in os.listdir(DIR_PROCESSED) if f.endswith('.csv')])
 
-    # Group files by artist
     artist_files = {}
     for path in all_files:
         filename = os.path.basename(path)
@@ -111,29 +109,23 @@ def run_event_study():
         album_vad['Release_Date'] = pd.to_datetime(album_vad['Release_Date'])
         album_vad = album_vad.dropna(subset=['Release_Date'])
         
-        # Merge all Reddit data for this artist
         merged_reddit = []
-        has_emotion_columns = False
         
         for f in files:
-            df = pd.read_csv(f, low_memory=False)
+            df = pd.read_csv(f, low_memory=False, on_bad_lines='skip')
             
-            # Find the date column
             date_col = next((c for c in ['Date', 'created_utc', 'timestamp'] if c in df.columns), None)
             if not date_col: continue
                 
             df['Date'] = pd.to_datetime(df[date_col], errors='coerce', unit='s' if df[date_col].dtype != 'object' else None)
             df = df.dropna(subset=['Date'])
             
-            # Check if this file has GoEmotions AI data
+            # Silently only accept files that actually have the GoEmotions columns
             if 'joy' in df.columns and 'anger' in df.columns:
-                has_emotion_columns = True
                 merged_reddit.append(df)
-            else:
-                print(f"   [Skipped {os.path.basename(f)}: Needs to be run through GoEmotions AI first]")
                 
         if not merged_reddit:
-            print(f"   !!! No AI-processed data found for {artist}. You must run their MASTER/COMMENTS files through the GoEmotions script.")
+            print(f"   [!] No AI-processed data found for {artist}. Skipping.")
             continue
             
         reddit_df = pd.concat(merged_reddit)
@@ -151,9 +143,13 @@ def run_event_study():
             pre_data = reddit_df[pre_mask]
             post_data = reddit_df[post_mask]
             
+            # Explicitly print WHY it failed
             if len(pre_data) < MIN_POSTS or len(post_data) < MIN_POSTS:
+                print(f"   [!] Dropped '{album_name}': Pre-posts: {len(pre_data)}, Post-posts: {len(post_data)}")
                 continue 
                 
+            print(f"   [OK] Processed '{album_name}'")
+            
             album_record = {'Artist': artist, 'Album': album_name}
             for dim in ['Valence', 'Arousal', 'Dominance']:
                 pre_mean = pre_data[dim].mean()
