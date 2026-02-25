@@ -174,9 +174,13 @@ def run_event_study():
             if len(df) == 0:
                 continue
             
-            # trigger ai scoring if columns are missing
+            # trigger ai scoring ONLY for the 2025/missing files
             if 'joy' not in df.columns or 'anger' not in df.columns:
-                df = process_missing_ai_data(df, f)
+                if "MASTER" in f.upper() or "COMMENTS" in f.upper():
+                    df = process_missing_ai_data(df, f)
+                else:
+                    # Ignore the raw duplicates like Eminem_Filtered.csv
+                    continue
             
             # parse dates dynamically
             cols_lower = {str(c).lower().strip(): c for c in df.columns}
