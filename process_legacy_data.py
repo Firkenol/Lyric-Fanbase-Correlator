@@ -12,17 +12,17 @@ RAW_DIR = r"D:\Lyrics-Fanbase-Correlator\Processed_Artist_Data"
 OUTPUT_DIR = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
 
 # windows: 1 month before/after
-# yeezus: june 18 2013
-Y_START = 1368835200 
-Y_END = 1374105600   
+# The Life of Pablo: feb 14 2016
+TLOP_START = 1454198400 
+TLOP_END = 1456617600 
 
 # swimming: aug 3 2018
 S_START = 1530576000 
 S_END = 1535932800   
 
 TARGETS = [
-    ("Kanye_comments", Y_START, Y_END, "KanyeWest"),
-    ("Kanye_submissions", Y_START, Y_END, "KanyeWest"),
+    ("Kanye_comments", TLOP_START, TLOP_END, "KanyeWest"),
+    ("Kanye_submissions", TLOP_START, TLOP_END, "KanyeWest"),
     ("MacMiller_comments", S_START, S_END, "MacMiller"),
     ("MacMiller_submissions", S_START, S_END, "MacMiller")
 ]
