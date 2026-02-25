@@ -176,11 +176,10 @@ def run_event_study():
             
             # trigger ai scoring ONLY for the 2025/missing files
             if 'joy' not in df.columns or 'anger' not in df.columns:
-                if "MASTER" in f.upper() or "COMMENTS" in f.upper():
-                    df = process_missing_ai_data(df, f)
-                else:
-                    # Ignore the raw duplicates like Eminem_Filtered.csv
+                # skip raw filtered duplicates since fulldist already has the ai scores
+                if f.lower().endswith("filtered.csv"):
                     continue
+                df = process_missing_ai_data(df, f)
             
             # parse dates dynamically
             cols_lower = {str(c).lower().strip(): c for c in df.columns}
