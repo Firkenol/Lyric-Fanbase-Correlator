@@ -7,10 +7,13 @@ import torch
 from transformers import pipeline
 from tqdm import tqdm
 import warnings
+
 warnings.filterwarnings('ignore')
 
+# --- CONFIGURATION ---
 DIR_ANALYSIS = r"D:\Lyrics-Fanbase-Correlator\Final_Analysis_Results"
 DIR_PROCESSED = r"D:\Lyrics-Fanbase-Correlator\Processed_Artist_Data"
+# We will overwrite this file with the new, unified lyrics data
 LYRICS_FILE = r"D:\Lyrics-Fanbase-Correlator\song_level_roberta_vad_fixed.csv"
 OUTPUT_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Results"
 GRAPH_DIR = r"D:\Lyrics-Fanbase-Correlator\Event_Study_Graphs"
@@ -53,219 +56,192 @@ VAD_DICT = {
     'neutral': [0.50, 0.50, 0.50]
 }
 
-# load huggingface pipeline only if needed
+# --- GLOBAL MODEL LOADER ---
 classifier = None
 
 def load_ai():
     global classifier
     if classifier is None:
-        print("\n[SYSTEM] Loading GoEmotions AI Model into memory...")
+        print("\n[SYSTEM] Loading GoEmotions AI Model...")
         device = 0 if torch.cuda.is_available() else -1
-        classifier = pipeline(
-            "text-classification", 
-            model="SamLowe/roberta-base-go_emotions", 
-            top_k=None, 
-            device=device
-        )
+        classifier = pipeline("text-classification", model="SamLowe/roberta-base-go_emotions", top_k=None, device=device)
     return classifier
 
-def process_missing_ai_data(df, file_path):
-    # setup text col
+# --- STEP 1: DYNAMIC LYRIC PROCESSING ---
+def update_lyric_scores():
+    print("\n--- STEP 1: Refreshing Lyric VAD Scores ---")
+    raw_lyrics = pd.read_csv(LYRICS_FILE)
+    
+    # ensure columns exist
+    if 'joy' not in raw_lyrics.columns:
+        print("   [!] Lyrics file missing AI scores. Running RoBERTa on lyrics...")
+        clf = load_ai()
+        lyrics_text = raw_lyrics['Lyric'].astype(str).tolist()
+        results = []
+        for i in tqdm(range(0, len(lyrics_text), 32), desc="Scoring Lyrics"):
+            batch = [s[:512] for s in lyrics_text[i:i+32]]
+            results.extend(clf(batch))
+        
+        scores = []
+        for res in results:
+            scores.append({pred['label']: pred['score'] for pred in res})
+        scores_df = pd.DataFrame(scores)
+        raw_lyrics = pd.concat([raw_lyrics, scores_df], axis=1)
+
+    # calculate vad
+    emotions = [e for e in VAD_DICT.keys() if e in raw_lyrics.columns]
+    v_w = pd.Series({e: VAD_DICT[e][0] for e in emotions})
+    a_w = pd.Series({e: VAD_DICT[e][1] for e in emotions})
+    d_w = pd.Series({e: VAD_DICT[e][2] for e in emotions})
+    
+    prob_sum = raw_lyrics[emotions].sum(axis=1).replace(0, 1)
+    raw_lyrics['Valence'] = raw_lyrics[emotions].dot(v_w) / prob_sum
+    raw_lyrics['Arousal'] = raw_lyrics[emotions].dot(a_w) / prob_sum
+    raw_lyrics['Dominance'] = raw_lyrics[emotions].dot(d_w) / prob_sum
+    
+    raw_lyrics.to_csv(LYRICS_FILE, index=False)
+    print(f"   [OK] Lyrics VAD updated. Saved to {LYRICS_FILE}")
+    return raw_lyrics
+
+# --- STEP 2: REDDIT AI SCORING ---
+def score_reddit_file(df, file_path):
     cols_lower = {str(c).lower().strip(): c for c in df.columns}
-    text_col = next((cols_lower[c] for c in ['comment', 'body', 'selftext', 'title', 'text', 'content'] if c in cols_lower), None)
+    text_col = next((cols_lower[c] for c in ['comment', 'body', 'selftext', 'text'] if c in cols_lower), None)
     
     if not text_col:
-        print(f"   [!] Cannot run AI on {os.path.basename(file_path)}: No text column found.")
         return df
 
-    print(f"   [AI] Processing {len(df)} rows for {os.path.basename(file_path)}. This will take a while...")
+    print(f"   [AI] Scoring {len(df)} posts in {os.path.basename(file_path)}...")
     clf = load_ai()
+    texts = df[text_col].astype(str).tolist()
     
-    df[text_col] = df[text_col].astype(str).fillna("")
-    texts = df[text_col].tolist()
-    
-    # process in batches to prevent oom
-    batch_size = 128
     all_scores = []
-    
-    for i in tqdm(range(0, len(texts), batch_size), desc="Running Inference"):
-        batch = texts[i:i+batch_size]
-        # truncate strings to fit roberta limit
-        batch = [str(t)[:512] for t in batch]
+    batch_size = 128
+    for i in tqdm(range(0, len(texts), batch_size), desc="Reddit Inference"):
+        batch = [t[:512] for t in texts[i:i+batch_size]]
         results = clf(batch)
-        
         for res in results:
-            score_dict = {pred['label']: pred['score'] for pred in res}
-            all_scores.append(score_dict)
+            all_scores.append({pred['label']: pred['score'] for pred in res})
             
     scores_df = pd.DataFrame(all_scores)
     df = pd.concat([df.reset_index(drop=True), scores_df.reset_index(drop=True)], axis=1)
-    
-    # save so we don't have to do this again
-    print(f"   [AI] Saving processed data back to {os.path.basename(file_path)}...")
     df.to_csv(file_path, index=False)
     return df
 
-def get_artist_from_filename(filename):
-    f = filename.lower().replace(" ", "")
-    for sub, artist in SUBREDDIT_MAP.items():
-        if sub in f or artist.lower().replace(" ", "") in f:
-            return artist
-    return None
-
-def calculate_vad(df):
-    emotions = [e for e in VAD_DICT.keys() if e in df.columns]
-    if not emotions:
-        return df
-        
-    v_weights = pd.Series({e: VAD_DICT[e][0] for e in emotions})
-    a_weights = pd.Series({e: VAD_DICT[e][1] for e in emotions})
-    d_weights = pd.Series({e: VAD_DICT[e][2] for e in emotions})
-    
-    prob_sum = df[emotions].sum(axis=1).replace(0, 1)
-    
-    df['Valence'] = df[emotions].dot(v_weights) / prob_sum
-    df['Arousal'] = df[emotions].dot(a_weights) / prob_sum
-    df['Dominance'] = df[emotions].dot(d_weights) / prob_sum
-    return df
-
-def run_event_study():
+# --- STEP 3: THE MAIN LOOP ---
+def run_everything():
     for d in [OUTPUT_DIR, GRAPH_DIR]:
         if not os.path.exists(d): os.makedirs(d)
 
-    raw_lyrics = pd.read_csv(LYRICS_FILE)
-    raw_lyrics['clean_artist'] = raw_lyrics['Artist'].astype(str).str.lower().str.replace(" ", "")
+    # get fresh lyrics
+    lyrics_df = update_lyric_scores()
+    lyrics_df['clean_artist'] = lyrics_df['Artist'].astype(str).str.lower().str.replace(" ", "")
 
-    all_files = []
-    if os.path.exists(DIR_ANALYSIS):
-        all_files.extend([os.path.join(DIR_ANALYSIS, f) for f in os.listdir(DIR_ANALYSIS) if f.endswith('.csv')])
-    if os.path.exists(DIR_PROCESSED):
-        all_files.extend([os.path.join(DIR_PROCESSED, f) for f in os.listdir(DIR_PROCESSED) if f.endswith('.csv')])
+    # gather files
+    all_paths = []
+    for folder in [DIR_ANALYSIS, DIR_PROCESSED]:
+        if os.path.exists(folder):
+            all_paths.extend([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.csv')])
 
     artist_files = {}
-    for path in all_files:
-        filename = os.path.basename(path)
-        artist = get_artist_from_filename(filename)
-        if artist:
-            if artist not in artist_files: artist_files[artist] = []
-            artist_files[artist].append(path)
+    for p in all_paths:
+        fname = os.path.basename(p).lower().replace(" ", "")
+        for sub, artist in SUBREDDIT_MAP.items():
+            if sub in fname or artist.lower().replace(" ", "") in fname:
+                if artist not in artist_files: artist_files[artist] = []
+                artist_files[artist].append(p)
 
     master_stats = []
-    WINDOW_DAYS = 14
-    MIN_POSTS = 3
-
+    
     for artist, files in artist_files.items():
-        artist_songs = raw_lyrics[raw_lyrics['clean_artist'] == artist.lower().replace(" ", "")].copy()
-        if artist_songs.empty: continue
-            
-        print(f"\n--- Running Event Study for {artist} ---")
+        print(f"\n--- Processing {artist} ---")
         
+        # calculate album means from lyrics
+        artist_songs = lyrics_df[lyrics_df['clean_artist'] == artist.lower().replace(" ", "")].copy()
         album_vad = artist_songs.groupby('Album')[['Valence', 'Arousal', 'Dominance']].mean().reset_index()
-        album_vad['Release_Date'] = album_vad['Album'].map(ALBUM_DATES)
-        album_vad['Release_Date'] = pd.to_datetime(album_vad['Release_Date'])
+        
+        # bulletproof date mapping
+        lower_dates = {k.lower().strip(): v for k, v in ALBUM_DATES.items()}
+        album_vad['Release_Date'] = album_vad['Album'].str.lower().str.strip().map(lower_dates)
         album_vad = album_vad.dropna(subset=['Release_Date'])
-        
+        album_vad['Release_Date'] = pd.to_datetime(album_vad['Release_Date'])
+
+        if album_vad.empty:
+            print(f"   [!] No release dates found for {artist}'s albums. Skipping.")
+            continue
+
+        # load and score reddit data
         merged_reddit = []
-        
         for f in files:
+            # skip duplicate raw files
+            if f.lower().endswith("filtered.csv") and any("fulldist" in x.lower() for x in files):
+                continue
+                
             df = pd.read_csv(f, low_memory=False, on_bad_lines='skip')
+            if len(df) == 0: continue
             
-            # ghost town check
-            if len(df) == 0:
+            if 'joy' not in df.columns:
+                df = score_reddit_file(df, f)
+            
+            # calculate vad for reddit
+            emotions = [e for e in VAD_DICT.keys() if e in df.columns]
+            v_w = pd.Series({e: VAD_DICT[e][0] for e in emotions})
+            a_w = pd.Series({e: VAD_DICT[e][1] for e in emotions})
+            d_w = pd.Series({e: VAD_DICT[e][2] for e in emotions})
+            p_sum = df[emotions].sum(axis=1).replace(0, 1)
+            df['Valence'] = df[emotions].dot(v_w) / p_sum
+            df['Arousal'] = df[emotions].dot(a_w) / p_sum
+            df['Dominance'] = df[emotions].dot(d_w) / p_sum
+            
+            # date parsing
+            cols = {str(c).lower(): c for c in df.columns}
+            d_col = next((cols[c] for c in ['date', 'created_utc', 'timestamp'] if c in cols), None)
+            if d_col:
+                df['Parsed_Date'] = pd.to_datetime(df[d_col], errors='coerce', unit='s' if df[d_col].dtype != 'object' else None)
+                merged_reddit.append(df.dropna(subset=['Parsed_Date']))
+
+        if not merged_reddit: continue
+        full_reddit = pd.concat(merged_reddit)
+
+        # event study
+        deltas = []
+        for _, row in album_vad.iterrows():
+            rel = row['Release_Date']
+            pre = full_reddit[(full_reddit['Parsed_Date'] >= rel - pd.Timedelta(days=14)) & (full_reddit['Parsed_Date'] < rel)]
+            post = full_reddit[(full_reddit['Parsed_Date'] >= rel) & (full_reddit['Parsed_Date'] <= rel + pd.Timedelta(days=14))]
+            
+            if len(pre) < 3 or len(post) < 3:
+                print(f"   [!] Dropped '{row['Album']}': Insufficient posts.")
                 continue
             
-            # trigger ai scoring ONLY for the 2025/missing files
-            if 'joy' not in df.columns or 'anger' not in df.columns:
-                # skip raw filtered duplicates since fulldist already has the ai scores
-                if f.lower().endswith("filtered.csv"):
-                    continue
-                df = process_missing_ai_data(df, f)
-            
-            # parse dates dynamically
-            cols_lower = {str(c).lower().strip(): c for c in df.columns}
-            date_col = next((cols_lower[c] for c in ['date', 'created_utc', 'timestamp', 'utc'] if c in cols_lower), None)
-            
-            if not date_col: continue
-                
-            df['Parsed_Date'] = pd.to_datetime(df[date_col], errors='coerce', unit='s' if df[date_col].dtype != 'object' else None)
-            df = df.dropna(subset=['Parsed_Date'])
-            
-            if 'joy' in df.columns and 'anger' in df.columns:
-                merged_reddit.append(df)
-                
-        if not merged_reddit:
-            print(f"   [!] No valid data found for {artist}.")
-            continue
-            
-        reddit_df = pd.concat(merged_reddit)
-        reddit_df = calculate_vad(reddit_df)
-
-        album_deltas = []
-
-        for _, row in album_vad.iterrows():
-            release_date = row['Release_Date']
-            album_name = row['Album']
-            
-            pre_mask = (reddit_df['Parsed_Date'] >= release_date - pd.Timedelta(days=WINDOW_DAYS)) & (reddit_df['Parsed_Date'] < release_date)
-            post_mask = (reddit_df['Parsed_Date'] >= release_date) & (reddit_df['Parsed_Date'] <= release_date + pd.Timedelta(days=WINDOW_DAYS))
-            
-            pre_data = reddit_df[pre_mask]
-            post_data = reddit_df[post_mask]
-            
-            if len(pre_data) < MIN_POSTS or len(post_data) < MIN_POSTS:
-                print(f"   [!] Dropped '{album_name}': Pre-posts: {len(pre_data)}, Post-posts: {len(post_data)}")
-                continue 
-                
-            print(f"   [OK] Processed '{album_name}'")
-            
-            album_record = {'Artist': artist, 'Album': album_name}
+            print(f"   [OK] Processed '{row['Album']}'")
+            rec = {'Artist': artist, 'Album': row['Album']}
             for dim in ['Valence', 'Arousal', 'Dominance']:
-                pre_mean = pre_data[dim].mean()
-                post_mean = post_data[dim].mean()
-                delta = post_mean - pre_mean
-                
-                t_stat, p_val = ttest_ind(pre_data[dim], post_data[dim], equal_var=False)
-                
-                album_record[f'Pre_{dim}'] = pre_mean
-                album_record[f'Post_{dim}'] = post_mean
-                album_record[f'Delta_{dim}'] = delta
-                album_record[f'TTest_p_{dim}'] = p_val
-                album_record[f'Lyric_{dim}'] = row[dim]
-                
-            album_deltas.append(album_record)
+                rec[f'Delta_{dim}'] = post[dim].mean() - pre[dim].mean()
+                rec[f'Lyric_{dim}'] = row[dim]
+            deltas.append(rec)
 
-        if not album_deltas: continue
+        if deltas:
+            df_deltas = pd.DataFrame(deltas)
+            df_deltas.to_csv(os.path.join(OUTPUT_DIR, f"{artist}_Shifts.csv"), index=False)
             
-        delta_df = pd.DataFrame(album_deltas)
-        delta_df.to_csv(os.path.join(OUTPUT_DIR, f"{artist}_Album_Shifts.csv"), index=False)
-        
-        artist_results = {'Artist': artist, 'Valid_Albums': len(delta_df)}
-        
-        for dim in ['Valence', 'Arousal', 'Dominance']:
-            if len(delta_df) > 2:
-                r_val, p_val = pearsonr(delta_df[f'Lyric_{dim}'], delta_df[f'Delta_{dim}'])
-                artist_results[f'{dim}_Pearson_r'] = r_val
-                artist_results[f'{dim}_Pearson_p'] = p_val
-                
-                plt.figure(figsize=(8, 6))
-                sns.regplot(x=delta_df[f'Lyric_{dim}'], y=delta_df[f'Delta_{dim}'], scatter_kws={'s':100}, line_kws={'color':'red'})
-                
-                for i, txt in enumerate(delta_df['Album']):
-                    plt.annotate(txt, (delta_df[f'Lyric_{dim}'][i], delta_df[f'Delta_{dim}'][i]), xytext=(5,5), textcoords='offset points', fontsize=8)
+            summary = {'Artist': artist, 'Albums': len(df_deltas)}
+            for dim in ['Valence', 'Arousal', 'Dominance']:
+                if len(df_deltas) >= 2:
+                    r, p = pearsonr(df_deltas[f'Lyric_{dim}'], df_deltas[f'Delta_{dim}'])
+                    summary[f'{dim}_r'] = r
+                    summary[f'{dim}_p'] = p
                     
-                plt.title(f"{artist}: Does {dim} in Music Predict Fanbase Shift?")
-                plt.xlabel(f"Music Lyrics {dim} (-1 to 1)")
-                plt.ylabel(f"Fanbase Reddit Shift (Post - Pre)")
-                plt.axhline(0, color='grey', linestyle='--', alpha=0.5)
-                plt.savefig(os.path.join(GRAPH_DIR, f"{artist}_{dim}_Scatter.png"))
-                plt.close()
-                
-        master_stats.append(artist_results)
+                    # graph it
+                    plt.figure()
+                    sns.regplot(data=df_deltas, x=f'Lyric_{dim}', y=f'Delta_{dim}')
+                    plt.title(f"{artist} {dim} Correlation")
+                    plt.savefig(os.path.join(GRAPH_DIR, f"{artist}_{dim}.png"))
+                    plt.close()
+            master_stats.append(summary)
 
-    if master_stats:
-        final_df = pd.DataFrame(master_stats)
-        final_df.to_csv(os.path.join(OUTPUT_DIR, "Master_Correlation_Results.csv"), index=False)
-        print("\nAll Done! Master Correlation Table Generated.")
+    pd.DataFrame(master_stats).to_csv(os.path.join(OUTPUT_DIR, "Final_Master_Correlations.csv"), index=False)
+    print("\n--- DONE. Go to sleep. ---")
 
 if __name__ == "__main__":
-    run_event_study()
+    run_everything()
