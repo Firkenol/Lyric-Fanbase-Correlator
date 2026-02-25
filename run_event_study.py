@@ -97,7 +97,7 @@ def run_event_study():
             artist_files[artist].append(path)
 
     master_stats = []
-    WINDOW_DAYS = 21
+    WINDOW_DAYS = 14
     MIN_POSTS = 3
 
     for artist, files in artist_files.items():
